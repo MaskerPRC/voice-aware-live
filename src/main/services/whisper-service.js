@@ -57,9 +57,18 @@ export class WhisperService {
       return null
     }
 
+    // 检测音频能量，过低则跳过（避免纯噪音触发 Whisper 幻觉）
+    let sumSq = 0
+    for (let i = 0; i < audioBuffer.length; i++) sumSq += audioBuffer[i] * audioBuffer[i]
+    const rms = Math.sqrt(sumSq / audioBuffer.length)
+    if (rms < 0.005) {
+      this.sendLog('debug', `${tag} 音频能量过低 (rms=${rms.toFixed(4)})，跳过`)
+      return null
+    }
+
     this.busy = true
     const t0 = Date.now()
-    this.sendLog('debug', `${tag} 开始转录 (samples=${audioBuffer.length}, ${(audioBuffer.length / 16000).toFixed(1)}s 音频, model=${model.id})`)
+    this.sendLog('debug', `${tag} 开始转录 (samples=${audioBuffer.length}, ${(audioBuffer.length / 16000).toFixed(1)}s, rms=${rms.toFixed(4)}, model=${model.id})`)
     try {
       const wavPath = join(this.tempDir, `chunk_${Date.now()}.wav`)
       this._writeWav(wavPath, audioBuffer, 16000)

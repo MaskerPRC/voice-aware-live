@@ -203,6 +203,56 @@ export function registerIpcHandlers(win) {
   ipcMain.on('window:close', () => mainWindow.close())
 }
 
+/**
+ * 检测 Whisper 幻觉文本：
+ * - 已知的幻觉短语（字幕制作、BLANK_AUDIO 等）
+ * - 大量重复片段（同一短语重复 3 次以上）
+ * - 纯括号/标点
+ */
+function isHallucination(text) {
+  if (!text) return true
+  const t = text.trim()
+  if (t.length === 0) return true
+
+  // 已知幻觉短语
+  const hallPhrases = [
+    '字幕製作', '字幕制作', 'CC字幕', '貝爾', '贝尔',
+    'BLANK_AUDIO', 'blank_audio',
+    'Thanks for watching', 'Thank you for watching',
+    'Please subscribe', 'like and subscribe',
+    'MoziMedia', 'Amara.org', 'Subtitles by',
+    '請訂閱', '谢谢观看', '感谢收看',
+    'ご視聴ありがとうございました'
+  ]
+  const lower = t.toLowerCase()
+  for (const phrase of hallPhrases) {
+    if (lower.includes(phrase.toLowerCase())) return true
+  }
+
+  // 纯括号/标点/符号
+  if (/^[\s()（）[\]{}<>《》「」【】:：;；,.，。!！?？、·…\-_—~～'"'""''`\\/|]+$/.test(t)) return true
+
+  // 重复检测：提取 2~30 字的片段，如果某片段重复占了全文 70% 以上
+  const cleaned = t.replace(/[，。！？、\s]/g, '')
+  if (cleaned.length < 4) return false
+  for (let len = 2; len <= Math.min(30, Math.floor(cleaned.length / 2)); len++) {
+    const pattern = cleaned.slice(0, len)
+    let count = 0
+    let pos = 0
+    while (pos <= cleaned.length - len) {
+      if (cleaned.slice(pos, pos + len) === pattern) {
+        count++
+        pos += len
+      } else {
+        pos++
+      }
+    }
+    if (count >= 3 && (count * len) / cleaned.length >= 0.7) return true
+  }
+
+  return false
+}
+
 async function handleSegmentReady(audioBuffer, segmentInfo) {
   const t0 = Date.now()
   sendLog('debug', `[handleSegmentReady] 进入 duration=${(segmentInfo.duration / 1000).toFixed(1)}s, whisper.busy=${whisperService.busy}`)
@@ -213,6 +263,10 @@ async function handleSegmentReady(audioBuffer, segmentInfo) {
     const result = await whisperService.transcribe(audioBuffer, segmentInfo, settings)
     if (!result || !result.text || result.text.trim().length === 0) {
       sendLog('warn', '片段无有效文本，跳过')
+      return
+    }
+    if (isHallucination(result.text)) {
+      sendLog('warn', `检测到 Whisper 幻觉，跳过: "${result.text.slice(0, 60)}"`)
       return
     }
 
@@ -259,7 +313,7 @@ async function handlePartialAudio(audioBuffer) {
     sendLog('debug', `[handlePartialAudio] 开始 (samples=${audioBuffer.length}, ${(audioBuffer.length / 16000).toFixed(1)}s)`)
     const settings = fileService.getSettings()
     const result = await whisperService.transcribe(audioBuffer, { partial: true }, settings)
-    if (result && result.text && mainWindow && !mainWindow.isDestroyed()) {
+    if (result && result.text && !isHallucination(result.text) && mainWindow && !mainWindow.isDestroyed()) {
       sendLog('debug', `[handlePartialAudio] 完成，文字="${result.text.slice(0, 60)}"`)
       mainWindow.webContents.send('transcription:partial', result)
     } else {
