@@ -80,7 +80,7 @@ const tipText = computed(() => {
     return 'Whisper 模型越大，识别质量越高，但速度越慢、占用内存越多。推荐中文场景使用 Medium 或以上模型。'
   }
   if (activeTab.value === 'runtime') {
-    return '运行时是 whisper.cpp 的可执行文件。根据你的硬件选择对应版本：有 NVIDIA 显卡选 CUDA，有 AMD/Intel 显卡选 Vulkan，没有独立显卡选 CPU。下载后在设置中选择计算设备即可。'
+    return '运行时来自 ggml-org/whisper.cpp 官方 Release（v1.8.4）。Windows：CPU 或 CUDA 11.8 / 12.4；官方已不再提供 Windows Vulkan 预编译包，界面里选「Vulkan」时会回退使用 CPU 版。macOS 从 XCFramework 中提取 main。Linux 请自行安装 whisper.cpp 后在设置中指定可执行文件路径。'
   }
   return 'LLM 模型用于自动总结转录内容并生成文件名。Qwen 3.5 0.8B 为超轻量，适合大多数设备；需要更好效果可选用 2B。'
 })

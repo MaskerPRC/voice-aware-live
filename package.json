@@ -12,6 +12,7 @@
     "dist": "electron-vite build && electron-builder"
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
     "@electron-toolkit/utils": "^4.0.0",
     "@phosphor-icons/vue": "^2.2.1",
     "electron-store": "^8.2.0",

@@ -50,7 +50,6 @@ export class WhisperService {
   }
 
   _resolveWhisperBinary(settings) {
-    // Priority: custom path > matching runtime binary > fallback
     const customPath = settings.whisperBinaryPath
     if (customPath && existsSync(customPath)) {
       return { path: customPath, isGpuBinary: settings.whisperDevice !== 'cpu' }
@@ -68,98 +67,120 @@ export class WhisperService {
       }
     }
 
-    // Legacy fallback: look in the bin directory
-    const binaryName = process.platform === 'win32' ? 'main.exe' : 'main'
-    const fallbackPath = join(app.getPath('userData'), 'bin', binaryName)
+    const binDir = join(app.getPath('userData'), 'bin')
+    const win = process.platform === 'win32'
+    const fallbacks = win
+      ? ['whisper-cli.exe', 'whisper-cli-cpu.exe', 'main.exe']
+      : ['whisper-cli-cpu', 'whisper-cli', 'main']
+    for (const name of fallbacks) {
+      const p = join(binDir, name)
+      if (existsSync(p)) return { path: p, isGpuBinary: false }
+    }
+    const fallbackPath = join(binDir, win ? 'whisper-cli.exe' : 'whisper-cli')
     return { path: fallbackPath, isGpuBinary: false }
   }
 
-  _runWhisperCpp(modelPath, audioPath, settings = {}) {
-    return new Promise((resolve, reject) => {
-      const { path: whisperBin, isGpuBinary } = this._resolveWhisperBinary(settings)
-      const device = settings.whisperDevice || 'cpu'
-      const language = settings.language || 'auto'
-      const threads = settings.whisperThreads || Math.max(1, Math.floor(os.cpus().length / 2))
-      const gpuLayers = settings.whisperGpuLayers || 0
+  _threadCount(settings) {
+    const n = settings.whisperThreads
+    if (typeof n === 'number' && n > 0) return n
+    return Math.max(1, Math.floor(os.cpus().length / 2))
+  }
 
+  async _runWhisperCpp(modelPath, audioPath, settings = {}) {
+    const { path: whisperBin, isGpuBinary } = this._resolveWhisperBinary(settings)
+    const device = settings.whisperDevice || 'cpu'
+    const language = settings.language || 'auto'
+    const threads = this._threadCount(settings)
+    const gpuLayers = settings.whisperGpuLayers || 0
+    const jsonPath = audioPath + '.json'
+
+    const buildArgs = (forceCpu) => {
       const args = [
         '-m', modelPath,
         '-f', audioPath,
-        '--language', language,
+        '--language', language === 'auto' ? 'auto' : language,
         '--output-json-full',
         '--no-prints',
         '-t', String(threads)
       ]
-
-      // GPU / CPU control
-      if (device === 'cpu' || !isGpuBinary) {
+      const useGpu = !forceCpu && device !== 'cpu' && isGpuBinary
+      if (!useGpu) {
         args.push('--no-gpu')
-        this.sendLog('debug', `使用 CPU 推理 (${threads} 线程)`)
+      } else if (gpuLayers > 0) {
+        args.push('-ngl', String(gpuLayers))
+      }
+      return args
+    }
+
+    const runOnce = (forceCpu) => new Promise((resolve, reject) => {
+      try { unlinkSync(jsonPath) } catch {}
+
+      const args = buildArgs(forceCpu)
+      if (forceCpu) {
+        this.sendLog('debug', `Whisper: CPU 模式 (${threads} 线程)`)
+      } else if (device !== 'cpu' && isGpuBinary) {
+        this.sendLog('debug', `Whisper: GPU 模式 (${device}${gpuLayers > 0 ? `, ngl=${gpuLayers}` : ''})`)
       } else {
-        if (gpuLayers > 0) {
-          args.push('-ngl', String(gpuLayers))
-        }
-        this.sendLog('debug', `使用 GPU 推理 (${device}${gpuLayers > 0 ? ', ' + gpuLayers + ' layers' : ''})`)
+        this.sendLog('debug', `Whisper: CPU 模式 (${threads} 线程)`)
       }
 
       let stdout = ''
       let stderr = ''
+      const proc = spawn(whisperBin, args, { cwd: this.tempDir })
 
-      const proc = spawn(whisperBin, args, {
-        cwd: this.tempDir,
-        timeout: 120000
-      })
+      proc.stdout.on('data', (d) => { stdout += d.toString() })
+      proc.stderr.on('data', (d) => { stderr += d.toString() })
 
-      proc.stdout.on('data', (data) => { stdout += data.toString() })
-      proc.stderr.on('data', (data) => { stderr += data.toString() })
-
+      proc.on('error', (err) => reject(err))
       proc.on('close', (code) => {
-        if (code !== 0) {
-          this.sendLog('warn', `whisper.cpp 退出码: ${code}`)
-        }
-
-        // Try to parse JSON output file
-        const jsonPath = audioPath + '.json'
-        try {
-          const jsonContent = readFileSync(jsonPath, 'utf-8')
-          const parsed = JSON.parse(jsonContent)
-          try { unlinkSync(jsonPath) } catch {}
-
-          const segments = (parsed.transcription || []).map((seg) => ({
-            start: seg.timestamps?.from || seg.offsets?.from || 0,
-            end: seg.timestamps?.to || seg.offsets?.to || 0,
-            text: seg.text?.trim() || ''
-          }))
-
-          resolve({
-            text: segments.map((s) => s.text).join(' '),
-            segments
-          })
-          return
-        } catch {}
-
-        // Fallback: parse stdout text output
-        if (stdout.trim()) {
-          resolve({
-            text: stdout.trim().replace(/\[.*?\]/g, '').trim(),
-            segments: []
-          })
-          return
-        }
-
-        reject(new Error(stderr || `whisper.cpp 退出码 ${code}`))
-      })
-
-      proc.on('error', (err) => {
-        if (err.code === 'ENOENT') {
-          reject(new Error(
-            'whisper.cpp 二进制文件未找到。请到"模型管理 → 运行时"下载，或在设置中配置自定义路径。\n路径: ' + whisperBin
-          ))
-        } else {
-          reject(err)
-        }
+        resolve({ code, stdout, stderr })
       })
     })
+
+    let { code, stdout, stderr } = await runOnce(false)
+
+    const wantGpu = device !== 'cpu' && isGpuBinary
+    if (code !== 0 && wantGpu) {
+      const detail = stderr.trim() || stdout.trim() || '(无输出)'
+      this.sendLog(
+        'warn',
+        `GPU 推理失败 (退出码 ${code})，自动改用 CPU 重试。原因摘要: ${detail.slice(0, 600)}${detail.length > 600 ? '…' : ''}`
+      )
+      ;({ code, stdout, stderr } = await runOnce(true))
+    }
+
+    if (code !== 0) {
+      const msg = stderr.trim() || stdout.trim() || `退出码 ${code}`
+      this.sendLog('error', `whisper.cpp 失败: ${msg.slice(0, 2000)}${msg.length > 2000 ? '…' : ''}`)
+      throw new Error(msg.slice(0, 500))
+    }
+
+    try {
+      const jsonContent = readFileSync(jsonPath, 'utf-8')
+      const parsed = JSON.parse(jsonContent)
+      try { unlinkSync(jsonPath) } catch {}
+
+      const segments = (parsed.transcription || []).map((seg) => ({
+        start: seg.timestamps?.from || seg.offsets?.from || 0,
+        end: seg.timestamps?.to || seg.offsets?.to || 0,
+        text: seg.text?.trim() || ''
+      }))
+
+      return {
+        text: segments.map((s) => s.text).join(' '),
+        segments
+      }
+    } catch {
+      // 仅当进程成功退出时才把 stdout 当作文本结果，避免把 WARNING / 错误行当成识别内容
+      const out = stdout.trim()
+      if (out && !/^warning|error|fatal|cuda|ggml|failed/i.test(out.split('\n')[0] || '')) {
+        return {
+          text: out.replace(/\[.*?\]/g, '').trim(),
+          segments: []
+        }
+      }
+      throw new Error(stderr.trim() || '无法解析 JSON 输出且无有效 stdout')
+    }
   }
 
   _writeWav(filepath, float32Array, sampleRate) {

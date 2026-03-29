@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import https from 'https'
@@ -131,54 +131,62 @@ const LLM_MODELS = [
   }
 ]
 
+/** 与 GitHub Release 资产名一致：https://github.com/ggml-org/whisper.cpp/releases */
+const WHISPER_RELEASE_TAG = 'v1.8.4'
+const WHISPER_RELEASE_BASE = `https://github.com/ggml-org/whisper.cpp/releases/download/${WHISPER_RELEASE_TAG}`
+
 const WHISPER_RUNTIMES = (() => {
   const isWin = process.platform === 'win32'
   const isMac = process.platform === 'darwin'
   const ext = isWin ? '.exe' : ''
-  const tag = 'v1.7.4'
-  const ghBase = `https://github.com/ggerganov/whisper.cpp/releases/download/${tag}`
-
+  const ghBase = WHISPER_RELEASE_BASE
   const runtimes = []
+
+  /** 官方已将 CLI 从 main 更名为 whisper-cli；zip 内的 main.exe 仅为弃用提示桩程序 */
+  const winCliCandidates = ['whisper-cli.exe', 'whisper-main-cpu.exe', 'main.exe']
 
   if (isWin) {
     runtimes.push(
       {
         id: 'runtime-cpu',
-        name: 'Whisper.cpp (CPU)',
+        name: 'Whisper.cpp (CPU x64)',
         type: 'runtime',
         device: 'cpu',
-        size: '~3 MB',
-        sizeBytes: 3_000_000,
-        description: '标准 CPU 版本，兼容所有设备',
+        size: '~4 MB',
+        sizeBytes: 4_100_000,
+        description: '官方预编译 CPU 版；入口程序为 whisper-cli.exe（勿再用 main.exe）',
         url: `${ghBase}/whisper-bin-x64.zip`,
-        filename: `main-cpu${ext}`,
-        archiveEntry: `main${ext}`,
+        filename: `whisper-cli-cpu${ext}`,
+        binaryCandidates: winCliCandidates,
+        legacyFilenames: [`main-cpu${ext}`],
         isZip: true
       },
       {
         id: 'runtime-cuda-12',
-        name: 'Whisper.cpp (CUDA 12)',
+        name: 'Whisper.cpp (CUDA 12.4 / cuBLAS)',
         type: 'runtime',
         device: 'gpu-cuda',
-        size: '~30 MB',
-        sizeBytes: 30_000_000,
-        description: 'NVIDIA GPU 加速（需要 CUDA 12 + cuBLAS）',
-        url: `${ghBase}/whisper-cublas-12.6.3-bin-x64.zip`,
-        filename: `main-cuda${ext}`,
-        archiveEntry: `main${ext}`,
+        size: '~440 MB',
+        sizeBytes: 457_000_000,
+        description: 'NVIDIA GPU，需本机安装与包匹配的 CUDA / cuBLAS 运行库',
+        url: `${ghBase}/whisper-cublas-12.4.0-bin-x64.zip`,
+        filename: `whisper-cli-cuda12${ext}`,
+        binaryCandidates: winCliCandidates,
+        legacyFilenames: [`main-cuda12${ext}`],
         isZip: true
       },
       {
-        id: 'runtime-vulkan',
-        name: 'Whisper.cpp (Vulkan)',
+        id: 'runtime-cuda-11',
+        name: 'Whisper.cpp (CUDA 11.8 / cuBLAS)',
         type: 'runtime',
-        device: 'gpu-vulkan',
-        size: '~5 MB',
-        sizeBytes: 5_000_000,
-        description: 'Vulkan GPU 加速（AMD / NVIDIA / Intel 均可）',
-        url: `${ghBase}/whisper-vulkan-x64.zip`,
-        filename: `main-vulkan${ext}`,
-        archiveEntry: `main${ext}`,
+        device: 'gpu-cuda',
+        size: '~60 MB',
+        sizeBytes: 59_000_000,
+        description: '较旧 NVIDIA 驱动环境可试此包（CUDA 11.8）',
+        url: `${ghBase}/whisper-cublas-11.8.0-bin-x64.zip`,
+        filename: `whisper-cli-cuda11${ext}`,
+        binaryCandidates: winCliCandidates,
+        legacyFilenames: [`main-cuda11${ext}`],
         isZip: true
       }
     )
@@ -186,31 +194,16 @@ const WHISPER_RUNTIMES = (() => {
     runtimes.push(
       {
         id: 'runtime-cpu',
-        name: 'Whisper.cpp (CPU + Metal)',
+        name: 'Whisper.cpp (macOS XCFramework)',
         type: 'runtime',
         device: 'cpu',
-        size: '~2 MB',
-        sizeBytes: 2_000_000,
-        description: 'macOS 版本，自带 Metal GPU 加速',
-        url: `${ghBase}/whisper-bin-macos-arm64.zip`,
-        filename: `main-cpu`,
-        archiveEntry: 'main',
-        isZip: true
-      }
-    )
-  } else {
-    runtimes.push(
-      {
-        id: 'runtime-cpu',
-        name: 'Whisper.cpp (CPU)',
-        type: 'runtime',
-        device: 'cpu',
-        size: '~3 MB',
-        sizeBytes: 3_000_000,
-        description: '标准 CPU 版本',
-        url: `${ghBase}/whisper-bin-linux-x64.zip`,
-        filename: 'main-cpu',
-        archiveEntry: 'main',
+        size: '~46 MB',
+        sizeBytes: 46_400_000,
+        description: '从官方 XCFramework 中提取 whisper-cli 或 main（含 Metal）',
+        url: `${ghBase}/whisper-${WHISPER_RELEASE_TAG}-xcframework.zip`,
+        filename: 'whisper-cli-cpu',
+        binaryCandidates: ['whisper-cli', 'main'],
+        legacyFilenames: ['main-cpu'],
         isZip: true
       }
     )
@@ -244,11 +237,22 @@ export class ModelManager {
     return this.modelsDir
   }
 
+  _findRuntimeBinPath(model) {
+    if (model.type !== 'runtime') return null
+    const p = join(this.binDir, model.filename)
+    return existsSync(p) ? p : null
+  }
+
   listModels() {
     return this._getAllEntries().map((model) => {
       const dir = this._getDirForType(model.type)
-      const filepath = join(dir, model.filename)
-      const downloaded = existsSync(filepath)
+      let filepath = join(dir, model.filename)
+      let downloaded = existsSync(filepath)
+      if (model.type === 'runtime') {
+        const found = this._findRuntimeBinPath(model)
+        downloaded = !!found
+        if (found) filepath = found
+      }
       let fileSize = 0
       if (downloaded) {
         try { fileSize = statSync(filepath).size } catch {}
@@ -266,16 +270,27 @@ export class ModelManager {
     const model = this._getAllEntries().find((m) => m.id === modelId)
     if (!model) return null
     const dir = this._getDirForType(model.type)
+    if (model.type === 'runtime') {
+      return this._findRuntimeBinPath(model)
+    }
     const filepath = join(dir, model.filename)
     return existsSync(filepath) ? filepath : null
   }
 
   getWhisperBinaryPath(device) {
-    const runtimeOrder = device === 'gpu-cuda'
-      ? ['runtime-cuda-12', 'runtime-vulkan', 'runtime-cpu']
-      : device === 'gpu-vulkan'
-        ? ['runtime-vulkan', 'runtime-cuda-12', 'runtime-cpu']
-        : ['runtime-cpu', 'runtime-vulkan', 'runtime-cuda-12']
+    const isWin = process.platform === 'win32'
+    const cudaFirst = ['runtime-cuda-12', 'runtime-cuda-11', 'runtime-cpu']
+    const cpuFirst = ['runtime-cpu', 'runtime-cuda-12', 'runtime-cuda-11']
+
+    let runtimeOrder
+    if (device === 'gpu-cuda') {
+      runtimeOrder = cudaFirst
+    } else if (device === 'gpu-vulkan') {
+      // 官方 Release 已不再提供 Windows Vulkan zip；回退到 CPU 可执行文件（设置里仍可选 Vulkan，实际走 CPU）
+      runtimeOrder = isWin ? ['runtime-cpu'] : ['runtime-cpu']
+    } else {
+      runtimeOrder = cpuFirst
+    }
 
     for (const id of runtimeOrder) {
       const path = this.getModelPath(id)
@@ -332,7 +347,7 @@ export class ModelManager {
           })
         }, controller.signal)
 
-        await this._extractFromZip(zipPath, model.archiveEntry, filepath)
+        await this._extractFromZip(zipPath, model, filepath)
         try { unlinkSync(zipPath) } catch {}
 
         // Make executable on Unix
@@ -379,6 +394,19 @@ export class ModelManager {
     if (!model) throw new Error(`未找到: ${modelId}`)
 
     const dir = this._getDirForType(model.type)
+    if (model.type === 'runtime') {
+      let removed = false
+      for (const fn of [model.filename, ...(model.legacyFilenames || [])]) {
+        const p = join(dir, fn)
+        if (existsSync(p)) {
+          unlinkSync(p)
+          removed = true
+        }
+      }
+      if (removed) this.sendLog('info', `已删除: ${model.name}`)
+      return
+    }
+
     const filepath = join(dir, model.filename)
     if (existsSync(filepath)) {
       unlinkSync(filepath)
@@ -386,57 +414,65 @@ export class ModelManager {
     }
   }
 
-  async _extractFromZip(zipPath, entryName, destPath) {
-    const { createReadStream } = await import('fs')
-    const { createUnzip } = await import('zlib')
-    const { pipeline } = await import('stream/promises')
+  async _extractFromZip(zipPath, model, destPath) {
+    const { default: AdmZip } = await import('adm-zip')
+    const zip = new AdmZip(zipPath)
+    const norm = (p) => p.replace(/\\/g, '/')
+    const names = zip.getEntries().filter((e) => !e.isDirectory)
+    const basenameOf = (entry) => norm(entry.entryName).split('/').pop() || ''
 
-    // Simple ZIP extraction: whisper.cpp release ZIPs are flat,
-    // so we look for the target file by scanning the local file headers.
-    const data = await import('fs').then((fs) => fs.promises.readFile(zipPath))
-    const entries = this._parseZipEntries(data)
-    const target = entries.find((e) =>
-      e.name === entryName || e.name.endsWith('/' + entryName)
-    )
-    if (!target) {
-      // Fallback: if there's only one .exe or executable, use it
-      const exeEntry = entries.find((e) =>
-        e.name.endsWith('.exe') || (!e.name.includes('.') && !e.name.endsWith('/'))
-      )
-      if (exeEntry) {
-        await writeFile(destPath, exeEntry.data)
-        return
-      }
-      throw new Error(`ZIP 中未找到文件: ${entryName}，可用: ${entries.map((e) => e.name).join(', ')}`)
+    const candidates = model.binaryCandidates
+      || (model.archiveEntry ? [model.archiveEntry] : ['whisper-cli.exe', 'main.exe'])
+
+    let picked = null
+    for (const want of candidates) {
+      const w = want.toLowerCase()
+      picked = names.find((e) => basenameOf(e).toLowerCase() === w)
+      if (picked) break
     }
-    await writeFile(destPath, target.data)
-  }
 
-  _parseZipEntries(buffer) {
-    const entries = []
-    let offset = 0
-    while (offset < buffer.length - 4) {
-      const sig = buffer.readUInt32LE(offset)
-      if (sig !== 0x04034b50) break // Local file header signature
-
-      const compMethod = buffer.readUInt16LE(offset + 8)
-      const compSize = buffer.readUInt32LE(offset + 18)
-      const uncompSize = buffer.readUInt32LE(offset + 22)
-      const nameLen = buffer.readUInt16LE(offset + 26)
-      const extraLen = buffer.readUInt16LE(offset + 28)
-      const name = buffer.toString('utf-8', offset + 30, offset + 30 + nameLen)
-      const dataStart = offset + 30 + nameLen + extraLen
-      const dataEnd = dataStart + compSize
-
-      if (compMethod === 0 && compSize > 0) {
-        entries.push({
-          name,
-          data: buffer.subarray(dataStart, dataEnd)
+    if (!picked) {
+      for (const want of candidates) {
+        const w = want.toLowerCase()
+        const hits = names.filter((e) => {
+          const n = norm(e.entryName).toLowerCase()
+          return n.endsWith('/' + w) || basenameOf(e).toLowerCase() === w
         })
+        if (hits.length === 1) {
+          picked = hits[0]
+          break
+        }
+        if (hits.length > 1 && process.platform === 'darwin') {
+          picked = hits.find((e) => norm(e.entryName).toLowerCase().includes('macos')) || hits[0]
+          break
+        }
+        if (hits.length > 1) {
+          picked = hits[0]
+          break
+        }
       }
-      offset = dataEnd
     }
-    return entries
+
+    if (!picked) {
+      const list = names.slice(0, 50).map((e) => norm(e.entryName)).join(', ')
+      throw new Error(`ZIP 中未找到候选可执行文件 (${candidates.join(', ')})。前若干项: ${list}`)
+    }
+
+    // Extract all files to binDir so DLLs are alongside the executable
+    const destDir = dirname(destPath)
+    for (const entry of names) {
+      const filename = basenameOf(entry)
+      if (!filename) continue
+      await writeFile(join(destDir, filename), entry.getData())
+    }
+
+    // Rename the extracted executable to the expected destPath name
+    const extractedBinName = basenameOf(picked)
+    const extractedBinPath = join(destDir, extractedBinName)
+    if (extractedBinPath !== destPath) {
+      const { renameSync } = await import('fs')
+      renameSync(extractedBinPath, destPath)
+    }
   }
 
   _downloadFile(url, destPath, onProgress, signal) {
