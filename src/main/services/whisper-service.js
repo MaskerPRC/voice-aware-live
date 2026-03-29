@@ -11,21 +11,55 @@ export class WhisperService {
     this.tempDir = join(app.getPath('temp'), 'asr-live')
     mkdirSync(this.tempDir, { recursive: true })
     this.busy = false
+    this._busyResolvers = []
+  }
+
+  /** 返回一个 Promise，在 busy 变为 false 时 resolve */
+  _waitUntilFree(timeoutMs = 30000) {
+    if (!this.busy) return Promise.resolve()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._busyResolvers = this._busyResolvers.filter((r) => r !== resolve)
+        resolve() // 超时也 resolve，让调用方再检查 busy
+      }, timeoutMs)
+      this._busyResolvers.push(() => { clearTimeout(timer); resolve() })
+    })
+  }
+
+  _notifyFree() {
+    const resolvers = this._busyResolvers
+    this._busyResolvers = []
+    for (const r of resolvers) r()
   }
 
   async transcribe(audioBuffer, segmentInfo = {}, settings = {}) {
+    const isPartial = !!segmentInfo.partial
+    const tag = isPartial ? '[Whisper/partial]' : '[Whisper/segment]'
+
     if (this.busy) {
-      this.sendLog('warn', 'Whisper 正忙，跳过此片段')
-      return null
+      if (isPartial) {
+        this.sendLog('debug', `${tag} busy=true，跳过 (samples=${audioBuffer.length})`)
+        return null
+      }
+      // segment 等待 Whisper 空闲
+      this.sendLog('debug', `${tag} busy=true，等待空闲… (samples=${audioBuffer.length})`)
+      await this._waitUntilFree()
+      if (this.busy) {
+        this.sendLog('warn', `${tag} 等待超时，仍然 busy，跳过`)
+        return null
+      }
+      this.sendLog('debug', `${tag} Whisper 已空闲，继续处理`)
     }
 
-    const model = this.modelManager.getDefaultWhisperModel()
+    const model = this.modelManager.getDefaultWhisperModel(settings.whisperModel)
     if (!model) {
-      this.sendLog('error', '没有可用的 Whisper 模型，请先下载')
+      this.sendLog('error', `${tag} 没有可用的 Whisper 模型，请先下载`)
       return null
     }
 
     this.busy = true
+    const t0 = Date.now()
+    this.sendLog('debug', `${tag} 开始转录 (samples=${audioBuffer.length}, ${(audioBuffer.length / 16000).toFixed(1)}s 音频, model=${model.id})`)
     try {
       const wavPath = join(this.tempDir, `chunk_${Date.now()}.wav`)
       this._writeWav(wavPath, audioBuffer, 16000)
@@ -34,6 +68,8 @@ export class WhisperService {
 
       try { unlinkSync(wavPath) } catch {}
 
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      this.sendLog('debug', `${tag} 完成 耗时=${elapsed}s, 识别文字="${result.text.slice(0, 80)}"`)
       return {
         text: result.text,
         segments: result.segments,
@@ -42,10 +78,11 @@ export class WhisperService {
         duration: segmentInfo.duration || 0
       }
     } catch (err) {
-      this.sendLog('error', `转录失败: ${err.message}`)
+      this.sendLog('error', `${tag} 转录失败 (耗时=${((Date.now() - t0) / 1000).toFixed(1)}s): ${err.message}`)
       return null
     } finally {
       this.busy = false
+      this._notifyFree()
     }
   }
 
@@ -161,8 +198,8 @@ export class WhisperService {
       try { unlinkSync(jsonPath) } catch {}
 
       const segments = (parsed.transcription || []).map((seg) => ({
-        start: seg.timestamps?.from || seg.offsets?.from || 0,
-        end: seg.timestamps?.to || seg.offsets?.to || 0,
+        start: seg.offsets?.from ?? seg.timestamps?.from ?? 0,
+        end: seg.offsets?.to ?? seg.timestamps?.to ?? 0,
         text: seg.text?.trim() || ''
       }))
 

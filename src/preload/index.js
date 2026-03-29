@@ -28,6 +28,7 @@ const api = {
   downloadModel: (modelId) => ipcRenderer.invoke('models:download', modelId),
   cancelDownload: (modelId) => ipcRenderer.invoke('models:cancel-download', modelId),
   deleteModel: (modelId) => ipcRenderer.invoke('models:delete', modelId),
+  selectModel: (modelId) => ipcRenderer.invoke('models:select', modelId),
   onModelDownloadProgress: (cb) => {
     const handler = (_e, data) => cb(data)
     ipcRenderer.on('model:download-progress', handler)

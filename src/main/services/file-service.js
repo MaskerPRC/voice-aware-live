@@ -21,7 +21,8 @@ const DEFAULT_SETTINGS = {
   whisperDevice: 'cpu',
   whisperBinaryPath: '',
   whisperThreads: 0,
-  whisperGpuLayers: 0
+  whisperGpuLayers: 0,
+  enableLLM: true
 }
 
 export class FileService {

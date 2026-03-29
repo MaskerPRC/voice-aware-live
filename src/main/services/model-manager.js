@@ -302,7 +302,13 @@ export class ModelManager {
     return null
   }
 
-  getDefaultWhisperModel() {
+  getDefaultWhisperModel(preferredId) {
+    // 优先使用指定的模型
+    if (preferredId) {
+      const path = this.getModelPath(preferredId)
+      if (path) return { id: preferredId, path }
+    }
+    // 回退到第一个已下载的模型
     for (const model of WHISPER_MODELS) {
       const path = this.getModelPath(model.id)
       if (path) return { id: model.id, path }
@@ -310,7 +316,11 @@ export class ModelManager {
     return null
   }
 
-  getDefaultLLMModel() {
+  getDefaultLLMModel(preferredId) {
+    if (preferredId) {
+      const path = this.getModelPath(preferredId)
+      if (path) return { id: preferredId, path }
+    }
     for (const model of LLM_MODELS) {
       const path = this.getModelPath(model.id)
       if (path) return { id: model.id, path }

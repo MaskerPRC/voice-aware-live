@@ -6,7 +6,7 @@ const props = defineProps({
   progress: { type: Object, default: null }
 })
 
-const emit = defineEmits(['download', 'cancel', 'delete'])
+const emit = defineEmits(['download', 'cancel', 'delete', 'select'])
 
 const isDownloading = computed(() => !!props.progress)
 
@@ -49,7 +49,7 @@ const deviceBadge = computed(() => {
 </script>
 
 <template>
-  <div class="bg-white rounded-2xl border border-stone-200/60 shadow-subtle p-5 transition-all hover:shadow-float">
+  <div :class="['bg-white rounded-2xl border p-5 transition-all hover:shadow-float', model.selected ? 'border-brand-400 shadow-subtle ring-1 ring-brand-200' : 'border-stone-200/60 shadow-subtle']">
     <div class="flex items-start justify-between">
       <!-- Info -->
       <div class="flex-1">
@@ -57,6 +57,9 @@ const deviceBadge = computed(() => {
           <h3 class="text-sm font-semibold text-stone-800">{{ model.name }}</h3>
           <span :class="['text-[10px] font-medium px-2 py-0.5 rounded-full', statusColor]">
             {{ statusLabel }}
+          </span>
+          <span v-if="model.selected" class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-brand-100 text-brand-700">
+            当前使用
           </span>
           <span v-if="deviceBadge" :class="['text-[10px] font-medium px-2 py-0.5 rounded-full', deviceBadge.class]">
             {{ deviceBadge.label }}
@@ -75,6 +78,13 @@ const deviceBadge = computed(() => {
       <!-- Actions -->
       <div class="flex items-center gap-2 ml-4">
         <template v-if="model.downloaded">
+          <button
+            v-if="model.type !== 'runtime' && !model.selected"
+            class="px-3 py-1.5 text-xs font-medium text-brand-600 hover:text-brand-700 bg-brand-50 hover:bg-brand-100 rounded-full transition-colors"
+            @click="emit('select')"
+          >
+            使用
+          </button>
           <button
             class="px-3 py-1.5 text-xs font-medium text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded-full transition-colors"
             @click="emit('delete')"

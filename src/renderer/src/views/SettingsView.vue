@@ -214,6 +214,27 @@ const isGpuMode = computed(() => settingsStore.settings.whisperDevice !== 'cpu')
       <section class="mb-8">
         <h2 class="text-sm font-semibold text-stone-700 mb-3">文件保存</h2>
         <div class="bg-white rounded-2xl border border-stone-200/60 shadow-subtle p-5 space-y-4">
+          <!-- LLM Toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-sm text-stone-700 font-medium">LLM 总结与命名</p>
+              <p class="text-xs text-stone-400 mt-0.5">使用本地大模型自动生成摘要和文件名</p>
+            </div>
+            <button
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                settingsStore.settings.enableLLM !== false ? 'bg-brand-500' : 'bg-stone-300'
+              ]"
+              @click="settingsStore.settings.enableLLM = !(settingsStore.settings.enableLLM !== false)"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  settingsStore.settings.enableLLM !== false ? 'translate-x-6' : 'translate-x-1'
+                ]"
+              />
+            </button>
+          </div>
           <div>
             <label class="block text-sm text-stone-600 mb-1.5">保存目录</label>
             <div class="flex gap-2">

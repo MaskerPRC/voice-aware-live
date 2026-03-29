@@ -59,6 +59,11 @@ async function deleteModel(modelId) {
   await loadModels()
 }
 
+async function selectModel(modelId) {
+  await window.api.selectModel(modelId)
+  await loadModels()
+}
+
 const whisperModels = computed(() => models.value.filter((m) => m.type === 'whisper'))
 const llmModels = computed(() => models.value.filter((m) => m.type === 'llm'))
 const runtimeModels = computed(() => models.value.filter((m) => m.type === 'runtime'))
@@ -147,6 +152,7 @@ const tipText = computed(() => {
             @download="downloadModel(model.id)"
             @cancel="cancelDownload(model.id)"
             @delete="deleteModel(model.id)"
+            @select="selectModel(model.id)"
           />
         </div>
 

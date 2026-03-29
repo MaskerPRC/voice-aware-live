@@ -64,9 +64,16 @@ export function registerIpcHandlers(win) {
 
   ipcMain.handle('recording:stop', async () => {
     try {
+      sendLog('debug', `[recording:stop] whisper.busy=${whisperService.busy}`)
       const remaining = audioProcessor.stop()
       if (remaining) {
-        await handleSegmentReady(remaining.buffer, remaining.info)
+        sendLog('debug', `[recording:stop] 剩余片段 duration=${(remaining.info.duration / 1000).toFixed(1)}s, samples=${remaining.buffer.length}`)
+        // 不阻塞 — 后台处理剩余片段，UI 立即返回
+        handleSegmentReady(remaining.buffer, remaining.info).catch((err) => {
+          sendLog('error', `[recording:stop] 剩余片段处理失败: ${err.message}`)
+        })
+      } else {
+        sendLog('debug', '[recording:stop] 无剩余片段')
       }
       sendLog('info', '录音已停止')
       return { success: true }
@@ -83,7 +90,25 @@ export function registerIpcHandlers(win) {
 
   // 模型管理
   ipcMain.handle('models:list', async () => {
-    return modelManager.listModels()
+    const settings = fileService.getSettings()
+    const models = modelManager.listModels()
+    return models.map((m) => ({
+      ...m,
+      selected: (m.type === 'whisper' && m.id === settings.whisperModel) ||
+                (m.type === 'llm' && m.id === settings.llmModel)
+    }))
+  })
+
+  ipcMain.handle('models:select', async (_event, modelId) => {
+    const models = modelManager.listModels()
+    const model = models.find((m) => m.id === modelId)
+    if (!model) return { success: false, error: '未找到模型' }
+    if (model.type === 'whisper') {
+      fileService.saveSettings({ whisperModel: modelId })
+    } else if (model.type === 'llm') {
+      fileService.saveSettings({ llmModel: modelId })
+    }
+    return { success: true }
   })
 
   ipcMain.handle('models:download', async (_event, modelId) => {
@@ -179,6 +204,8 @@ export function registerIpcHandlers(win) {
 }
 
 async function handleSegmentReady(audioBuffer, segmentInfo) {
+  const t0 = Date.now()
+  sendLog('debug', `[handleSegmentReady] 进入 duration=${(segmentInfo.duration / 1000).toFixed(1)}s, whisper.busy=${whisperService.busy}`)
   try {
     sendLog('info', `处理语音片段: ${(segmentInfo.duration / 1000).toFixed(1)}s`)
 
@@ -190,14 +217,16 @@ async function handleSegmentReady(audioBuffer, segmentInfo) {
     }
 
     let filename = `segment_${Date.now()}`
-    try {
-      const summary = await llmService.summarize(result.text)
-      if (summary && summary.filename) {
-        filename = summary.filename
+    if (settings.enableLLM !== false) {
+      try {
+        const summary = await llmService.summarize(result.text, settings.llmModel)
+        if (summary && summary.filename) {
+          filename = summary.filename
+        }
+        result.summary = summary?.summary || ''
+      } catch (err) {
+        sendLog('warn', `LLM 总结失败，使用默认文件名: ${err.message}`)
       }
-      result.summary = summary?.summary || ''
-    } catch (err) {
-      sendLog('warn', `LLM 总结失败，使用默认文件名: ${err.message}`)
     }
 
     const saved = fileService.saveSegment(result, filename, segmentInfo)
@@ -212,18 +241,31 @@ async function handleSegmentReady(audioBuffer, segmentInfo) {
       })
     }
   } catch (err) {
-    sendLog('error', `处理片段失败: ${err.message}`)
+    sendLog('error', `[handleSegmentReady] 处理失败: ${err.message}`)
+  } finally {
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+    sendLog('debug', `[handleSegmentReady] 结束 总耗时=${elapsed}s，重置 partial 计时器`)
+    // Push the partial-audio timer out so it doesn't fire while Whisper is still busy
+    audioProcessor.resetPartialTimer()
   }
 }
 
 async function handlePartialAudio(audioBuffer) {
+  if (whisperService.busy) {
+    sendLog('debug', `[handlePartialAudio] whisper busy，跳过 partial (samples=${audioBuffer.length})`)
+    return
+  }
   try {
+    sendLog('debug', `[handlePartialAudio] 开始 (samples=${audioBuffer.length}, ${(audioBuffer.length / 16000).toFixed(1)}s)`)
     const settings = fileService.getSettings()
     const result = await whisperService.transcribe(audioBuffer, { partial: true }, settings)
     if (result && result.text && mainWindow && !mainWindow.isDestroyed()) {
+      sendLog('debug', `[handlePartialAudio] 完成，文字="${result.text.slice(0, 60)}"`)
       mainWindow.webContents.send('transcription:partial', result)
+    } else {
+      sendLog('debug', '[handlePartialAudio] 完成，无文字')
     }
-  } catch {
-    // partial results are best-effort
+  } catch (err) {
+    sendLog('debug', `[handlePartialAudio] 异常: ${err.message}`)
   }
 }
