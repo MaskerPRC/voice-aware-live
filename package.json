@@ -1,7 +1,7 @@
 {
   "name": "asr-live",
   "version": "1.0.0",
-  "description": "实时语音转文字桌面应用 - 基于 Whisper + 本地大模型",
+  "description": "Real-time speech-to-text desktop app powered by Whisper and local LLM",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

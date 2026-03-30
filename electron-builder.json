@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
   "appId": "com.asrlive.app",
-  "productName": "ASR Live",
+  "productName": "ASRLive",
   "directories": {
     "buildResources": "build"
   },
@@ -11,20 +11,16 @@
   ],
   "extraResources": [],
   "win": {
-    "target": ["nsis"],
-    "icon": "build/icon.ico"
+    "target": ["nsis"]
   },
   "mac": {
-    "target": ["dmg"],
-    "icon": "build/icon.icns"
+    "target": ["dmg"]
   },
   "linux": {
-    "target": ["AppImage"],
-    "icon": "build/icon.png"
+    "target": ["AppImage"]
   },
   "nsis": {
     "oneClick": false,
-    "allowToChangeInstallationDirectory": true,
-    "installerIcon": "build/icon.ico"
+    "allowToChangeInstallationDirectory": true
   }
 }
