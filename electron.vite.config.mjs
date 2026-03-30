@@ -4,7 +4,7 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@electron-toolkit/utils'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@electron-toolkit/utils', 'uuid', 'adm-zip', 'electron-store'] })],
     build: {
       rollupOptions: {
         external: ['node-llama-cpp']
