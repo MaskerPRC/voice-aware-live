@@ -9,7 +9,7 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "pack": "electron-builder --dir",
-    "dist": "electron-vite build && electron-builder"
+    "dist": "electron-vite build && electron-builder --publish never"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
